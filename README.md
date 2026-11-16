@@ -4,7 +4,7 @@ A phone-first workout and diet tracker with animated 3D exercise demos.
 
 - **Today**: the day's workout, meals, water and morning weight at a glance
 - **Workout**: a 6-day split (Sunday off) with a warm-up and exercise list for each day
-- **Exercise screen**: a realistic 3D figure performing the movement with the working muscles highlighted, step-by-step instructions, mistakes to avoid, a set logger and a rest timer
+- **Exercise screen**: a realistic 3D figure performing the movement with the working muscles highlighted, step-by-step instructions, mistakes to avoid, a set logger with suggested weights and a rest timer
 - **Diet**: five meals with amounts, calories and protein, and a daily checklist
 - **Progress**: weight and waist log, trend chart, weekly workout count, backup export and import
 
@@ -36,12 +36,14 @@ All tracking data is stored in the browser's `localStorage` on the device (key `
 src/
   main.js            routes and app shell
   store.js           localStorage data layer
+  coach.js           weight suggestions: what to load, when to go up or drop
   timer.js           rest timer
   ui.js              small shared helpers and icons
   styles.css
   data/
     plan.js          weekly split: exercises, sets, reps, rest
     exercises.js     exercise instructions and notes
+    loads.js         starting weight ranges per exercise
     diet.js          meals and targets
   views/             one file per screen
   three/

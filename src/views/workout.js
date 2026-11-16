@@ -1,6 +1,7 @@
 import { DAYS, WARMUP, BACK_RULES, dayById } from '../data/plan.js';
 import { EXERCISES } from '../data/exercises.js';
-import { dateKey, doneCount } from '../store.js';
+import { dateKey, doneCount, lastSets } from '../store.js';
+import { loadLabel } from '../coach.js';
 import { ICON, esc } from '../ui.js';
 
 export function planView(root) {
@@ -20,10 +21,11 @@ export function planView(root) {
 const exRow = (item, dayId, date, n) => {
   const ex = EXERCISES[item.ex];
   const done = Math.min(item.sets, doneCount(date, item.ex));
+  const load = loadLabel(item.ex, lastSets(item.ex, date));
   return `
     <a class="ex-row" href="#/ex/${item.ex}?d=${dayId}">
       <span class="num ${done >= item.sets ? 'done' : ''}">${done >= item.sets ? ICON.check : n}</span>
-      <span class="grow"><b>${esc(ex.name)}</b><span class="muted small">${item.sets} × ${esc(item.reps)}${done && done < item.sets ? ` · ${done} done` : ''}</span></span>
+      <span class="grow"><b>${esc(ex.name)}</b><span class="muted small">${item.sets} × ${esc(item.reps)}${load ? ` · ${esc(load)}` : ''}${done && done < item.sets ? ` · ${done} done` : ''}</span></span>
       ${ICON.chev}
     </a>`;
 };

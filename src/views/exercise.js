@@ -3,6 +3,7 @@ import { WARMUP, dayById } from '../data/plan.js';
 import { dateKey, dayLog, peekDay, lastSets, save } from '../store.js';
 import { createViewer } from '../three/viewer.js';
 import { startRest } from '../timer.js';
+import { coach, repRange } from '../coach.js';
 import { ICON, esc, fmtShort } from '../ui.js';
 
 // Which inputs a set row shows, by exercise unit.
@@ -72,13 +73,21 @@ export function exerciseView(root, [id], query) {
   };
   const paintLogger = () => {
     const saved = peekDay(date)?.sets?.[id] ?? [];
+    const n = rows();
+    const plan = coach(id, item, last, saved, n);
+    const range = repRange(item.reps);
+    let current = saved.findIndex((s) => !s?.done);
+    if (current < 0) current = saved.length;
     logger.innerHTML = `
       <div class="row"><h3>Log your sets</h3><span class="small muted">${last ? `Last time (${fmtShort(last.date)}): ${last.sets.map((s) => (unit === 'kg' ? `${s.w ?? '–'}×${s.r ?? '–'}` : (s.r ?? '–'))).join(', ')}` : 'First session'}</span></div>
-      ${Array.from({ length: rows() }, (_, i) => {
+      ${plan.header ? `<p class="coach">${esc(plan.header)}</p>` : ''}
+      ${Array.from({ length: n }, (_, i) => {
         const s = saved[i] ?? {};
-        return `<div class="set ${s.done ? 'done' : ''}" data-i="${i}">
+        const ph = (key) => (key === 'w' ? (plan.sets[i]?.w ?? '') : ghost(i, key) || (unit === 'kg' && range ? (range[0] === range[1] ? range[0] : `${range[0]}–${range[1]}`) : ''));
+        const hint = i === current && i < n ? plan.sets[i]?.hint : '';
+        return `${hint ? `<p class="hint">${esc(hint)}</p>` : ''}<div class="set ${s.done ? 'done' : ''}" data-i="${i}">
           <span class="setn">${i + 1}</span>
-          ${fields.map(([key, label, step]) => `<label><input type="number" inputmode="decimal" step="${step}" min="0" data-k="${key}" value="${s[key] ?? ''}" placeholder="${ghost(i, key)}" /><span>${label}</span></label>`).join('')}
+          ${fields.map(([key, label, step]) => `<label><input type="number" inputmode="decimal" step="${step}" min="0" data-k="${key}" value="${s[key] ?? ''}" placeholder="${ph(key)}" /><span>${label}</span></label>`).join('')}
           <button class="tick" data-a="done" aria-label="Mark set ${i + 1} done" aria-pressed="${!!s.done}">${ICON.check}</button>
         </div>`;
       }).join('')}
@@ -117,7 +126,9 @@ export function exerciseView(root, [id], query) {
       const s = setAt(i);
       // An empty field takes the value from last session, so one tap repeats it.
       for (const input of row.querySelectorAll('input')) {
-        const v = parseFloat(input.value || input.placeholder);
+        // A suggested range such as "14–18" is not a value; only a single number is.
+        const text = input.value || (/^\d+(\.\d+)?$/.test(input.placeholder) ? input.placeholder : '');
+        const v = parseFloat(text);
         if (!Number.isNaN(v)) s[input.dataset.k] = v;
       }
       s.done = !s.done;
