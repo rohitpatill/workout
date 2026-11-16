@@ -2,6 +2,7 @@
 // foot positions); elbows and knees are solved with two-bone IK, and every body part is
 // a cylinder or sphere stretched between the solved points.
 import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 
 const rad = (d) => (d * Math.PI) / 180;
 const v3 = (a) => (a.isVector3 ? a.clone() : new THREE.Vector3(a[0], a[1], a[2]));
@@ -88,7 +89,8 @@ function placeCyl(mesh, a, b, rx, rz = rx) {
 }
 
 export const GEO = {
-  cyl: new THREE.CylinderGeometry(1, 1, 1, 18),
+  cyl: new THREE.CylinderGeometry(1, 1, 1, 24),
+  hex: new THREE.CylinderGeometry(1, 1, 1, 6),
   taper: new THREE.CylinderGeometry(1, 0.82, 1, 18),
   sph: new THREE.SphereGeometry(1, 22, 16),
   box: new THREE.BoxGeometry(1, 1, 1),
@@ -171,42 +173,58 @@ export class Mannequin {
 
 // Equipment is described each frame as a list of simple specs (see props.js) and drawn
 // from pooled meshes, so benches, bars and cables can follow the body.
+// Spec types: cyl / hex (between points a and b), box / rbox (centre p, size s, tilt rx), sph.
+const rboxCache = new Map();
+function rboxGeo(s, radius) {
+  const key = `${s[0].toFixed(3)}|${s[1].toFixed(3)}|${s[2].toFixed(3)}|${radius}`;
+  if (!rboxCache.has(key)) rboxCache.set(key, new RoundedBoxGeometry(s[0], s[1], s[2], 4, Math.min(radius, Math.min(...s) / 2 - 0.001)));
+  return rboxCache.get(key);
+}
+
 export class PropPool {
   constructor() {
     this.group = new THREE.Group();
+    const M = (color, roughness, metalness = 0) => new THREE.MeshStandardMaterial({ color, roughness, metalness });
     this.mats = {
-      metal: new THREE.MeshStandardMaterial({ color: 0x8a94a6, roughness: 0.4, metalness: 0.5 }),
-      pad: new THREE.MeshStandardMaterial({ color: 0x4d5669, roughness: 0.8 }),
-      weight: new THREE.MeshStandardMaterial({ color: 0x3a3f4c, roughness: 0.45, metalness: 0.4 }),
-      cable: new THREE.MeshStandardMaterial({ color: 0x9aa3b2, roughness: 0.4, metalness: 0.5 }),
+      metal: M(0x8a92a0, 0.38, 0.85), // brushed steel
+      chrome: M(0xdfe5ee, 0.16, 1), // bars and handles
+      frame: M(0x565d6b, 0.5, 0.45), // powder-coated machine frames
+      pad: M(0x23262e, 0.5, 0.05), // vinyl upholstery
+      rubber: M(0x191a1f, 0.85, 0), // plates, dumbbell heads, belts
+      weight: M(0x30333b, 0.5, 0.7), // cast iron
+      cable: M(0x1b1d22, 0.5, 0.4),
+      rope: M(0x2a2622, 0.95, 0),
+      accent: M(0xff7a3d, 0.5, 0.1),
     };
-    this.pool = { cyl: [], box: [], sph: [] };
+    this.pool = { cyl: [], hex: [], box: [], rbox: [], sph: [] };
   }
 
   _get(type, i) {
     const list = this.pool[type];
     if (!list[i]) {
-      list[i] = new THREE.Mesh(GEO[type], this.mats.metal);
+      list[i] = new THREE.Mesh(GEO[type] ?? GEO.box, this.mats.metal);
+      list[i].castShadow = list[i].receiveShadow = true;
       this.group.add(list[i]);
     }
     return list[i];
   }
 
   update(specs) {
-    const n = { cyl: 0, box: 0, sph: 0 };
+    const n = { cyl: 0, hex: 0, box: 0, rbox: 0, sph: 0 };
     for (const s of specs) {
       const mesh = this._get(s.t, n[s.t]++);
       mesh.visible = true;
       mesh.material = this.mats[s.c] ?? this.mats.metal;
-      if (s.t === 'cyl') {
+      if (s.t === 'cyl' || s.t === 'hex') {
         placeCyl(mesh, v3(s.a), v3(s.b), s.r);
-      } else if (s.t === 'box') {
-        mesh.position.set(s.p[0], s.p[1], s.p[2]);
-        mesh.rotation.set(rad(s.rx ?? 0), 0, 0);
-        mesh.scale.set(s.s[0], s.s[1], s.s[2]);
-      } else {
+      } else if (s.t === 'sph') {
         mesh.position.set(s.p[0], s.p[1], s.p[2]);
         mesh.scale.setScalar(s.r);
+      } else {
+        mesh.position.set(s.p[0], s.p[1], s.p[2]);
+        mesh.rotation.set(rad(s.rx ?? 0), 0, 0);
+        if (s.t === 'rbox') mesh.geometry = rboxGeo(s.s, s.rad ?? 0.03);
+        else mesh.scale.set(s.s[0], s.s[1], s.s[2]);
       }
     }
     for (const type of Object.keys(n)) for (let i = n[type]; i < this.pool[type].length; i++) this.pool[type][i].visible = false;

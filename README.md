@@ -4,7 +4,7 @@ A phone-first workout and diet tracker with animated 3D exercise demos.
 
 - **Today**: the day's workout, meals, water and morning weight at a glance
 - **Workout**: a 6-day split (Sunday off) with a warm-up and exercise list for each day
-- **Exercise screen**: a 3D mannequin performing the movement with the working muscles highlighted, step-by-step instructions, mistakes to avoid, a set logger and a rest timer
+- **Exercise screen**: a realistic 3D figure performing the movement with the working muscles highlighted, step-by-step instructions, mistakes to avoid, a set logger and a rest timer
 - **Diet**: five meals with amounts, calories and protein, and a daily checklist
 - **Progress**: weight and waist log, trend chart, weekly workout count, backup export and import
 
@@ -45,13 +45,19 @@ src/
     diet.js          meals and targets
   views/             one file per screen
   three/
-    rig.js           procedural mannequin (two-bone IK) and equipment pool
-    props.js         equipment helpers: benches, dumbbells, bars, cables
+    human.js         skinned human figure: retargets poses onto the model's skeleton (IK)
+    rig.js           equipment pool, plus a simple stick mannequin used as a fallback
+    props.js         equipment helpers: benches, dumbbells, bars, cables, weight stacks
     poses.js         one animation per movement
-    viewer.js        scene, camera and playback
+    viewer.js        scene, lighting, camera and playback
+public/models/       the human model (see Credits)
 ```
 
 To add a screen, write a view in `src/views` and register it in `src/main.js`. To change the plan, edit the files in `src/data`. Open `#/debug` to see a contact sheet of every animation's start and end pose.
+
+## Credits
+
+The human figure is the "Superhero Male" base character from the Universal Base Characters kit by [Quaternius](https://quaternius.com), released under CC0 1.0. See `public/models/LICENSE.txt`.
 
 ## Tech
 

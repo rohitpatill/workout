@@ -661,9 +661,11 @@ input::placeholder {
 
 /* debug contact sheet */
 .sheet {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-  gap: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 98vw;
+  margin-left: calc(50% - 49vw);
 }
 .sheet figure {
   background: var(--surface);
@@ -672,16 +674,13 @@ input::placeholder {
   font-size: 11px;
 }
 .sheet img {
-  width: 50%;
+  width: var(--w);
+  height: var(--w);
+  vertical-align: top;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .bar i {
     transition: none;
   }
-}
-.sheet {
-  width: 96vw;
-  margin-left: calc(50% - 48vw);
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
 }

@@ -1,53 +1,128 @@
 // 3D exercise viewer: one renderer per mounted viewer, disposed when the screen changes.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { Mannequin, PropPool } from './rig.js';
+import { Human, loadHuman } from './human.js';
 import { ANIMS } from './poses.js';
 
 const BG = 0x12151b;
 const rad = (d) => (d * Math.PI) / 180;
 const ease = (x) => x * x * (3 - 2 * x);
 
-function buildStage() {
+// Rubber gym flooring: dark speckled tiles with faint seams.
+function floorTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const g = c.getContext('2d');
+  g.fillStyle = '#23272f';
+  g.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 2600; i++) {
+    const v = 28 + Math.random() * 46;
+    g.fillStyle = `rgba(${v + 8},${v + 12},${v + 22},${0.25 + Math.random() * 0.4})`;
+    g.fillRect(Math.random() * 512, Math.random() * 512, 1 + Math.random() * 1.6, 1 + Math.random() * 1.6);
+  }
+  g.strokeStyle = 'rgba(8,9,12,0.9)';
+  g.lineWidth = 3;
+  g.strokeRect(0, 0, 512, 512);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(8, 8);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
+}
+
+function setupRenderer(renderer) {
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFShadowMap;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 0.92;
+}
+
+function buildStage(renderer) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(BG);
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x2a2f3a, 1.5));
-  const key = new THREE.DirectionalLight(0xffffff, 2.2);
-  key.position.set(3, 5, 4);
-  scene.add(key);
-  const rim = new THREE.DirectionalLight(0x8fb4ff, 0.9);
-  rim.position.set(-4, 3, -3);
-  scene.add(rim);
+  scene.fog = new THREE.Fog(BG, 7, 15);
 
-  const floorGeo = new THREE.CircleGeometry(2.2, 48);
-  const floorMat = new THREE.MeshStandardMaterial({ color: 0x1b1f27, roughness: 0.95 });
+  // Soft studio reflections for the metal and skin, plus a key light that casts the shadow.
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const env = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  pmrem.dispose();
+  scene.environment = env;
+  scene.environmentIntensity = 0.55;
+
+  const key = new THREE.DirectionalLight(0xfff1e0, 2.3);
+  key.position.set(2.5, 5, 3);
+  key.castShadow = true;
+  key.shadow.mapSize.set(1024, 1024);
+  key.shadow.camera.left = key.shadow.camera.bottom = -2.4;
+  key.shadow.camera.right = key.shadow.camera.top = 2.4;
+  key.shadow.camera.near = 1;
+  key.shadow.camera.far = 12;
+  key.shadow.bias = -0.0006;
+  key.shadow.normalBias = 0.02;
+  key.shadow.radius = 5;
+  scene.add(key);
+  const rim = new THREE.DirectionalLight(0x8fb4ff, 1.3);
+  rim.position.set(-3.5, 3, -3);
+  scene.add(rim);
+  scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x1a1c22, 0.35));
+
+  const floorGeo = new THREE.CircleGeometry(8, 64);
+  const floorMap = floorTexture();
+  const floorMat = new THREE.MeshStandardMaterial({ map: floorMap, roughness: 0.92, metalness: 0 });
   const floor = new THREE.Mesh(floorGeo, floorMat);
   floor.rotation.x = -Math.PI / 2;
   floor.position.y = -0.002;
+  floor.receiveShadow = true;
   scene.add(floor);
 
   const stage = new THREE.Group();
-  const man = new Mannequin();
   const props = new PropPool();
-  stage.add(man.group, props.group);
+  stage.add(props.group);
   scene.add(stage);
 
+  const state = { man: null, highlight: [] };
+  const setFigure = (man) => {
+    if (state.man) stage.remove(state.man.group);
+    state.man = man;
+    stage.add(man.group);
+    man.setHighlight(state.highlight);
+  };
+  const setHighlight = (keys) => {
+    state.highlight = keys;
+    state.man?.setHighlight(keys);
+  };
   const apply = (anim, t) => {
+    if (!state.man) return;
     const pose = anim.pose(t);
     const r = pose.gRot ?? [0, 0, 0];
     const p = pose.gPos ?? [0, 0, 0];
     stage.rotation.set(rad(r[0]), rad(r[1]), rad(r[2]));
     stage.position.set(p[0], p[1], p[2]);
-    const pts = man.update(pose);
+    const pts = state.man.update(pose);
     props.update(anim.props ? anim.props(pts, t) : []);
   };
   const dispose = () => {
-    man.dispose();
+    state.man?.dispose();
     props.dispose();
     floorGeo.dispose();
     floorMat.dispose();
+    floorMap.dispose();
+    env.dispose();
   };
-  return { scene, man, apply, dispose };
+  return { scene, apply, dispose, setFigure, setHighlight, ready: () => !!state.man };
+}
+
+// Realistic figure if the model loads, the simple mannequin if it does not.
+async function loadFigure() {
+  try {
+    return new Human(await loadHuman());
+  } catch (err) {
+    console.warn('Human model failed to load, using the simple mannequin.', err);
+    return new Mannequin();
+  }
 }
 
 function frame(camera, anim, aspect) {
@@ -73,27 +148,35 @@ function phaseAt(time) {
   return { t: 0, phase: 1 };
 }
 
+const NOOP = { dispose() {}, setPlaying() {}, setSpeed() {}, resetView() {} };
+
 export function createViewer(container, animKey, { highlight = [], onPhase } = {}) {
   const anim = ANIMS[animKey];
-  if (!anim) return { dispose() {}, setPlaying() {}, setSpeed() {}, resetView() {} };
+  if (!anim) return NOOP;
 
   let renderer;
   try {
     renderer = new THREE.WebGLRenderer({ antialias: true });
   } catch {
     container.innerHTML = '<div class="viewer-fallback">3D preview is not available on this device.</div>';
-    return { dispose() {}, setPlaying() {}, setSpeed() {}, resetView() {} };
+    return NOOP;
   }
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  setupRenderer(renderer);
   container.appendChild(renderer.domElement);
 
-  const { scene, man, apply, dispose: disposeStage } = buildStage();
-  man.setHighlight(highlight);
+  const stage = buildStage(renderer);
+  stage.setHighlight(highlight);
+  let disposed = false;
+  loadFigure().then((man) => {
+    if (!disposed) stage.setFigure(man);
+  });
+
   const camera = new THREE.PerspectiveCamera(34, 1, 0.1, 50);
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.enablePan = false;
-  controls.minDistance = 2;
+  controls.minDistance = 1.6;
   controls.maxDistance = 9;
   controls.maxPolarAngle = Math.PI / 2 - 0.03;
 
@@ -124,7 +207,7 @@ export function createViewer(container, animKey, { highlight = [], onPhase } = {
 
   renderer.setAnimationLoop(() => {
     timer.update();
-    if (playing) time += timer.getDelta() * speed;
+    if (playing && stage.ready()) time += timer.getDelta() * speed;
     let t;
     let phase = 0;
     if (anim.loop) {
@@ -138,9 +221,9 @@ export function createViewer(container, animKey, { highlight = [], onPhase } = {
       lastPhase = phase;
       onPhase?.(phase);
     }
-    apply(anim, t);
+    stage.apply(anim, t);
     controls.update();
-    renderer.render(scene, camera);
+    renderer.render(stage.scene, camera);
   });
 
   return {
@@ -152,36 +235,39 @@ export function createViewer(container, animKey, { highlight = [], onPhase } = {
     },
     resetView,
     dispose() {
+      disposed = true;
       renderer.setAnimationLoop(null);
       ro.disconnect();
       timer.dispose();
       controls.dispose();
-      disposeStage();
+      stage.dispose();
       renderer.dispose();
       renderer.domElement.remove();
     },
   };
 }
 
-// Renders still frames of every animation (start and end) for the #/debug contact sheet.
-export function renderSheet(keys, size = 260) {
+// Renders still frames of animations for the #/debug contact sheet.
+export async function renderSheet(keys, size = 260, times = null) {
   const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
   renderer.setSize(size, size);
-  const { scene, apply, dispose } = buildStage();
+  setupRenderer(renderer);
+  const stage = buildStage(renderer);
+  stage.setFigure(await loadFigure());
   const camera = new THREE.PerspectiveCamera(34, 1, 0.1, 50);
   const out = [];
   for (const key of keys) {
     const anim = ANIMS[key];
     frame(camera, anim, 1);
     const shots = [];
-    for (const t of anim.loop ? [0.1, 0.6] : [0, 1]) {
-      apply(anim, t);
-      renderer.render(scene, camera);
-      shots.push(renderer.domElement.toDataURL('image/jpeg', 0.8));
+    for (const t of times ?? (anim.loop ? [0.1, 0.6] : [0, 1])) {
+      stage.apply(anim, t);
+      renderer.render(stage.scene, camera);
+      shots.push(renderer.domElement.toDataURL('image/jpeg', 0.85));
     }
     out.push({ key, shots });
   }
-  dispose();
+  stage.dispose();
   renderer.dispose();
   return out;
 }

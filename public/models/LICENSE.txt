@@ -1,0 +1,7 @@
+athlete.glb and athlete-normal.webp are derived from "Superhero Male" in the
+Universal Base Characters kit (standard version) by Quaternius
+(https://quaternius.com). The source files were repacked: textures other than
+the normal map, extra UV sets and vertex colours were removed.
+
+License: CC0 1.0 Universal (Public Domain Dedication)
+https://creativecommons.org/publicdomain/zero/1.0/
