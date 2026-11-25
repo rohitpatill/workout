@@ -5,6 +5,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { Mannequin, PropPool } from './rig.js';
 import { Human, loadHuman } from './human.js';
 import { ANIMS } from './poses.js';
+import { ctx as propCtx } from './props.js';
 
 const BG = 0x12151b;
 const rad = (d) => (d * Math.PI) / 180;
@@ -102,7 +103,20 @@ function buildStage(renderer) {
     stage.rotation.set(rad(r[0]), rad(r[1]), rad(r[2]));
     stage.position.set(p[0], p[1], p[2]);
     const pts = state.man.update(pose);
+    // Each animation remembers its cables' shortest lengths so weight stacks rise correctly.
+    propCtx.mins = anim.cableMins ??= {};
     props.update(anim.props ? anim.props(pts, t) : []);
+    return pts;
+  };
+  // Run through the whole movement once so those shortest lengths are known up front.
+  const prime = (anim) => {
+    if (!state.man || anim.primed) return;
+    for (let i = 0; i <= 10; i++) apply(anim, i / 10);
+    anim.primed = true;
+  };
+  const toWorld = (v) => {
+    stage.updateMatrixWorld();
+    return stage.localToWorld(v.clone());
   };
   const dispose = () => {
     state.man?.dispose();
@@ -112,7 +126,7 @@ function buildStage(renderer) {
     floorMap.dispose();
     env.dispose();
   };
-  return { scene, apply, dispose, setFigure, setHighlight, ready: () => !!state.man };
+  return { scene, apply, prime, dispose, setFigure, setHighlight, toWorld, ready: () => !!state.man };
 }
 
 // Realistic figure if the model loads, the simple mannequin if it does not.
@@ -148,7 +162,7 @@ function phaseAt(time) {
   return { t: 0, phase: 1 };
 }
 
-const NOOP = { dispose() {}, setPlaying() {}, setSpeed() {}, resetView() {} };
+const NOOP = { dispose() {}, setPlaying() {}, setSpeed() {}, resetView() {}, setView() {}, zoom() {}, setFull() {} };
 
 export function createViewer(container, animKey, { highlight = [], onPhase } = {}) {
   const anim = ANIMS[animKey];
@@ -169,20 +183,48 @@ export function createViewer(container, animKey, { highlight = [], onPhase } = {
   stage.setHighlight(highlight);
   let disposed = false;
   loadFigure().then((man) => {
-    if (!disposed) stage.setFigure(man);
+    if (disposed) return;
+    stage.setFigure(man);
+    stage.prime(anim);
   });
 
-  const camera = new THREE.PerspectiveCamera(34, 1, 0.1, 50);
-  const controls = new OrbitControls(camera, renderer.domElement);
+  const camera = new THREE.PerspectiveCamera(34, 1, 0.05, 50);
+  const canvas = renderer.domElement;
+  // Inline, the page must stay scrollable: the mouse wheel and vertical swipes scroll the
+  // page, sideways swipes rotate the figure. In full view every gesture goes to the figure.
+  let full = false;
+  const wheelGuard = (e) => {
+    if (!full) e.stopImmediatePropagation();
+  };
+  canvas.addEventListener('wheel', wheelGuard); // registered before OrbitControls on purpose
+  const controls = new OrbitControls(camera, canvas);
+  canvas.style.touchAction = 'pan-y';
   controls.enableDamping = true;
   controls.enablePan = false;
-  controls.minDistance = 1.6;
+  controls.minDistance = 0.45;
   controls.maxDistance = 9;
   controls.maxPolarAngle = Math.PI / 2 - 0.03;
 
   const resetView = () => {
     const look = frame(camera, anim, container.clientWidth / Math.max(container.clientHeight, 1));
     controls.target.set(look[0], look[1], look[2]);
+    controls.update();
+  };
+  // Preset angles around the exercise's own focus point, at its default distance.
+  const setView = (name) => {
+    resetView();
+    if (name === 'default') return;
+    const t = controls.target;
+    const d = camera.position.distanceTo(t);
+    const dir = { front: [0, 0.12, 1], side: [1, 0.12, 0], back: [0, 0.12, -1], top: [0.001, 1, 0.12] }[name];
+    const n = Math.hypot(...dir);
+    camera.position.set(t.x + (dir[0] / n) * d, t.y + (dir[1] / n) * d, t.z + (dir[2] / n) * d);
+    controls.update();
+  };
+  const zoom = (factor) => {
+    const t = controls.target;
+    const d = Math.min(controls.maxDistance, Math.max(controls.minDistance, camera.position.distanceTo(t) * factor));
+    camera.position.sub(t).setLength(d).add(t);
     controls.update();
   };
   const resize = () => {
@@ -234,8 +276,15 @@ export function createViewer(container, animKey, { highlight = [], onPhase } = {
       speed = v;
     },
     resetView,
+    setView,
+    zoom,
+    setFull(v) {
+      full = v;
+      canvas.style.touchAction = v ? 'none' : 'pan-y';
+    },
     dispose() {
       disposed = true;
+      canvas.removeEventListener('wheel', wheelGuard);
       renderer.setAnimationLoop(null);
       ro.disconnect();
       timer.dispose();
@@ -247,23 +296,36 @@ export function createViewer(container, animKey, { highlight = [], onPhase } = {
   };
 }
 
-// Renders still frames of animations for the #/debug contact sheet.
-export async function renderSheet(keys, size = 260, times = null) {
+// Renders still frames of animations for the #/debug contact sheet. view can override the
+// camera: { cam: [x,y,z], look: [x,y,z] | 'hand', fov }.
+export async function renderSheet(keys, size = 260, times = null, view = {}) {
   const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
   renderer.setSize(size, size);
   setupRenderer(renderer);
   const stage = buildStage(renderer);
   stage.setFigure(await loadFigure());
-  const camera = new THREE.PerspectiveCamera(34, 1, 0.1, 50);
+  const camera = new THREE.PerspectiveCamera(view.fov ?? 34, 1, 0.05, 50);
   const out = [];
   for (const key of keys) {
     const anim = ANIMS[key];
-    frame(camera, anim, 1);
+    stage.prime(anim);
+    stage.setHighlight(view.hl ?? []);
     const shots = [];
     for (const t of times ?? (anim.loop ? [0.1, 0.6] : [0, 1])) {
-      stage.apply(anim, t);
+      const pts = stage.apply(anim, t);
+      if (view.cam || view.look) {
+        let look = view.look ?? anim.look ?? [0, 0.8, 0];
+        if (look === 'hand' && pts) {
+          const h = stage.toWorld(pts.haA);
+          look = [h.x, h.y, h.z];
+        }
+        const cam = view.cam ?? anim.cam ?? [2.5, 1.4, 2.9];
+        const rel = view.look === 'hand';
+        camera.position.set(rel ? look[0] + cam[0] : cam[0], rel ? look[1] + cam[1] : cam[1], rel ? look[2] + cam[2] : cam[2]);
+        camera.lookAt(look[0], look[1], look[2]);
+      } else frame(camera, anim, 1);
       renderer.render(stage.scene, camera);
-      shots.push(renderer.domElement.toDataURL('image/jpeg', 0.85));
+      shots.push(renderer.domElement.toDataURL('image/jpeg', 0.9));
     }
     out.push({ key, shots });
   }

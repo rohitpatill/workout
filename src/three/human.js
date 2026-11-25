@@ -19,9 +19,14 @@ const smooth = (a, b, x) => {
   return t * t * (3 - 2 * t);
 };
 
-const GRIP = 0.085; // wrist to the centre of the palm
+// Where things sit in the hand, measured on the model (metres from the wrist joint).
+const PALM_ALONG = 0.085; // centre of an open palm
+const GRIP_ALONG = 0.103; // a held handle lies just behind the knuckles...
+const GRIP_DROP = 0.018; // ...this far below the bone line, plus the handle radius
 const FINGERS = ['index', 'middle', 'ring', 'pinky'];
-const CURL = [1.25, 1.45, 0.9]; // radians per finger joint for a closed grip
+// Finger joint angles (radians) that wrap a thin bar and a thick one.
+const CURL_THIN = [0.8, 1.4, 1.05];
+const CURL_THICK = [0.55, 1.05, 0.75];
 
 const DEFAULTS = {
   pelvis: [0, 0.95, 0],
@@ -169,7 +174,9 @@ export function loadHuman() {
     normalMap.flipY = false;
     normalMap.colorSpace = THREE.NoColorSpace;
     normalMap.anisotropy = 4;
-    return prepare(gltf, normalMap);
+    const template = prepare(gltf, normalMap);
+    if (import.meta.env.DEV) window.__human = template;
+    return template;
   })();
   return cache;
 }
@@ -193,6 +200,7 @@ export class Human {
           const name = `${f}_0${j}_${side}`;
           this.curlAxis[name] = Z.clone().applyQuaternion(template.rest[name].q.clone().invert());
         }
+    this.thumbCache = new Map();
     this.W = {};
     this.pos = {};
     this.setHighlight([]);
@@ -215,6 +223,41 @@ export class Human {
       );
     }
     col.needsUpdate = true;
+  }
+
+  // Local rotations for the three thumb joints so the thumb wraps under a handle of radius
+  // gr. Worked out in the rest pose (fingers along +-X, palm down, handle along Z) by
+  // aiming each joint at a point on a circle around the handle, then blended by curl.
+  _thumb(sfx, s, gr, curl) {
+    const key = `${sfx}|${gr}|${curl.toFixed(2)}`;
+    if (this.thumbCache.has(key)) return this.thumbCache.get(key);
+    const { rest } = this.t;
+    const names = [1, 2, 3, 4].map((j) => (j < 4 ? `thumb_0${j}_${sfx}` : `thumb_04_leaf_${sfx}`));
+    const hand = rest[`hand_${sfx}`];
+    const centre = V(s * GRIP_ALONG, -(GRIP_DROP + gr), 0).add(hand.p);
+    const rho = gr + 0.014;
+    const around = (deg, z) => {
+      const a = (deg * Math.PI) / 180;
+      return V(centre.x - s * rho * Math.cos(a), centre.y - rho * Math.sin(a), hand.p.z + z);
+    };
+    const aims = [around(-15, 0.05), around(65, 0.058), around(140, 0.064)];
+    const out = [];
+    let R = new THREE.Quaternion();
+    let p = rest[names[0]].p.clone();
+    let parentW = hand.q.clone();
+    const k = Math.min(1, Math.max(0, (curl - 0.3) / 0.6));
+    for (let j = 0; j < 3; j++) {
+      const seg = rest[names[j + 1]].p.clone().sub(rest[names[j]].p);
+      const cur = seg.clone().applyQuaternion(R).normalize();
+      const want = aims[j].clone().sub(p).normalize();
+      R = new THREE.Quaternion().setFromUnitVectors(cur, want).multiply(R);
+      p = p.clone().add(seg.applyQuaternion(R));
+      const W = R.clone().multiply(rest[names[j]].q);
+      out.push(rest[names[j]].lq.clone().slerp(parentW.clone().invert().multiply(W), k));
+      parentW = W;
+    }
+    this.thumbCache.set(key, out);
+    return out;
   }
 
   // World position of a bone from its parent's solved world transform.
@@ -287,78 +330,97 @@ export class Human {
       const target = v3(pick('hand'));
       const pole = v3(pick('elbow'));
       const handFwd = pick('handFwd') ? v3(pick('handFwd')).normalize() : null;
-      const wristTarget = handFwd ? target.clone().addScaledVector(handFwd, -GRIP) : target;
-      const l2 = handFwd ? dims.fore : dims.fore + GRIP;
+      const curl = pick('curl') ?? (handFwd ? 0.12 : 1);
+      const gr = pick('gripR') ?? 0.014;
+      const grip = pick('grip') ?? 0;
+      // A closed hand holds its handle under the knuckles; an open hand rests on the palm.
+      const holding = curl > 0.5;
+      const along = holding ? GRIP_ALONG : PALM_ALONG;
+      const off = holding ? GRIP_DROP + gr : 0;
+      const s0 = s > 0 ? Y : Y.clone().negate();
+      const pu = R0(N('lowerarm')).clone().sub(R0(N('upperarm')));
+      const pf = R0(N('hand')).clone().sub(R0(N('lowerarm')));
       const c0 = R0(N('upperarm')).clone().sub(R0(N('clavicle'))).normalize();
       let Rc = R3;
+      let Rhand = null;
+      let palmN = null;
+      if (handFwd) {
+        const ph = R0(N('middle_01')).clone().sub(R0(N('hand')));
+        Rhand = frameRot(ph, Y.clone().negate(), handFwd, v3(pick('handPalm') ?? [0, -1, 0]));
+        palmN = Y.clone().negate().applyQuaternion(Rhand);
+      }
       let S;
       let arm;
-      for (let pass = 0; pass < 2; pass++) {
+      let E;
+      let f;
+      let wrist;
+      // The palm direction depends on the solved arm, and the wrist target depends on the
+      // palm direction, so a few passes settle both (and the collarbone lift).
+      for (let pass = 0; pass < 4; pass++) {
         this._fk(N('clavicle'), 'spine_03');
         this._setWorld(N('clavicle'), Rc);
         S = this._fk(N('upperarm'), N('clavicle'));
-        arm = ik(S, wristTarget, dims.upper, l2, pole);
-        if (pass === 1) break;
-        // Raise the collarbone as the upper arm lifts, like a real shoulder.
-        const lift = Math.max(0, arm.mid.clone().sub(S).normalize().dot(dirUp));
-        if (lift < 0.05) break;
-        const c0w = c0.clone().applyQuaternion(R3);
-        const c1 = c0w.clone().addScaledVector(dirUp, 0.5 * lift).normalize();
-        Rc = new THREE.Quaternion().setFromUnitVectors(c0w, c1).multiply(R3);
+        const wt = target.clone();
+        if (palmN) wt.addScaledVector(palmN, -off);
+        if (handFwd) wt.addScaledVector(handFwd, -along);
+        arm = ik(S, wt, dims.upper, handFwd ? dims.fore : dims.fore + along, pole);
+        E = arm.mid;
+        f = arm.end.clone().sub(E).normalize();
+        wrist = E.clone().addScaledVector(f, dims.fore);
+        if (!handFwd) {
+          // Forearm rotation toward a palms-up (grip 1) or palms-down (grip -1) hold.
+          const palmNat = arm.hinge.clone().multiplyScalar(-s);
+          const flex = arm.pp.clone().negate();
+          flex.addScaledVector(f, -flex.dot(f));
+          let twist = 0;
+          if (grip && flex.lengthSq() > 1e-6) {
+            flex.normalize();
+            twist = grip * Math.atan2(f.dot(palmNat.clone().cross(flex)), palmNat.dot(flex));
+          }
+          const Rf = frameRot(pf, s0, f, arm.hinge);
+          this._setWorld(N('lowerarm'), new THREE.Quaternion().setFromAxisAngle(f, twist * 0.35).multiply(Rf));
+          Rhand = new THREE.Quaternion().setFromAxisAngle(f, twist).multiply(Rf);
+          palmN = Y.clone().negate().applyQuaternion(Rhand);
+        } else {
+          this._setWorld(N('lowerarm'), frameRot(pf, s0, f, arm.hinge));
+        }
+        if (pass === 0) {
+          // Raise the collarbone as the upper arm lifts, like a real shoulder.
+          const lift = Math.max(0, E.clone().sub(S).normalize().dot(dirUp));
+          if (lift > 0.05) {
+            const c0w = c0.clone().applyQuaternion(R3);
+            const c1 = c0w.clone().addScaledVector(dirUp, 0.5 * lift).normalize();
+            Rc = new THREE.Quaternion().setFromUnitVectors(c0w, c1).multiply(R3);
+          }
+        }
       }
-      const E = arm.mid;
       const u = E.clone().sub(S).normalize();
-      const f = arm.end.clone().sub(E).normalize();
-      const wrist = E.clone().addScaledVector(f, dims.fore);
-      const hinge = arm.hinge;
-      const s0 = s > 0 ? Y : Y.clone().negate();
-
-      // Forearm rotation toward a palms-up (grip 1) or palms-down (grip -1) hold.
-      const palmNat = hinge.clone().multiplyScalar(-s);
-      const flex = arm.pp.clone().negate();
-      flex.addScaledVector(f, -flex.dot(f));
-      let twist = 0;
-      const grip = pick('grip') ?? 0;
-      if (grip && flex.lengthSq() > 1e-6) {
-        flex.normalize();
-        twist = grip * Math.atan2(f.dot(palmNat.clone().cross(flex)), palmNat.dot(flex));
-      }
-      const tw = (k) => new THREE.Quaternion().setFromAxisAngle(f, twist * k);
-
-      const pu = R0(N('lowerarm')).clone().sub(R0(N('upperarm')));
-      const pf = R0(N('hand')).clone().sub(R0(N('lowerarm')));
-      this._setWorld(N('upperarm'), frameRot(pu, s0, u, hinge));
-      const Rf = frameRot(pf, s0, f, hinge);
-      this._setWorld(N('lowerarm'), tw(0.35).multiply(Rf));
-      let Rhand;
-      let gripPt;
-      if (handFwd) {
-        const palm = v3(pick('handPalm') ?? [0, -1, 0]);
-        const ph = R0(N('middle_01')).clone().sub(R0(N('hand')));
-        Rhand = frameRot(ph, Y.clone().negate(), handFwd, palm);
-        gripPt = wrist.clone().addScaledVector(handFwd, GRIP);
-      } else {
-        Rhand = tw(1).multiply(Rf);
-        gripPt = arm.end;
-      }
+      this._setWorld(N('upperarm'), frameRot(pu, s0, u, arm.hinge));
       this._setWorld(N('hand'), Rhand);
       this._applyLocal(N('clavicle'), 'spine_03');
       this._applyLocal(N('upperarm'), N('clavicle'));
       this._applyLocal(N('lowerarm'), N('upperarm'));
       this._applyLocal(N('hand'), N('lowerarm'));
+      const gripPt = wrist.clone().addScaledVector(handFwd ?? f, along).addScaledVector(palmN, off);
 
-      const curl = pick('curl') ?? (handFwd ? 0.12 : 1);
+      // Fingers wrap the handle; the thumb closes around it from the other side.
+      const thick = Math.min(1, Math.max(0, (gr - 0.014) / 0.02));
       for (const fn of FINGERS)
         for (const j of [1, 2, 3]) {
           const name = `${fn}_0${j}_${sfx}`;
-          this.b[name].quaternion.copy(rest[name].lq).multiply(new THREE.Quaternion().setFromAxisAngle(this.curlAxis[name], -s * curl * CURL[j - 1]));
+          const angle = curl * (CURL_THIN[j - 1] + (CURL_THICK[j - 1] - CURL_THIN[j - 1]) * thick);
+          this.b[name].quaternion.copy(rest[name].lq).multiply(new THREE.Quaternion().setFromAxisAngle(this.curlAxis[name], -s * angle));
         }
+      const thumb = this._thumb(sfx, s, gr, curl);
+      for (let j = 0; j < 3; j++) this.b[`thumb_0${j + 1}_${sfx}`].quaternion.copy(thumb[j]);
 
       pts['sh' + key] = S;
       pts['el' + key] = E;
+      pts['wr' + key] = wrist;
       pts['ha' + key] = gripPt;
-      // Axis of a handle held in this hand (across the palm).
+      // Axis of a handle held in this hand (across the palm), and the palm facing.
       pts['ax' + key] = Z.clone().applyQuaternion(Rhand);
+      pts['palm' + key] = palmN.clone();
 
       // ----- leg -----
       this._fk(N('thigh'), 'pelvis');

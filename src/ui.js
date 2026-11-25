@@ -17,6 +17,8 @@ export const ICON = {
   check: svg('<path d="M5 12l5 5 9-10"/>'),
   play: svg('<path d="M7 4l13 8-13 8z" fill="currentColor"/>'),
   pause: svg('<path d="M7 4v16M17 4v16"/>'),
+  expand: svg('<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>'),
+  close: svg('<path d="M6 6l12 12M18 6L6 18"/>'),
   reset: svg('<path d="M4 12a8 8 0 1 0 3-6.2M4 4v5h5"/>'),
 };
 

@@ -35,12 +35,17 @@ export function exerciseView(root, [id], query) {
     <div class="viewer">
       <div class="canvas"></div>
       <div class="cue"></div>
+      <div class="vzoom">
+        <button data-a="zin" aria-label="Zoom in">+</button>
+        <button data-a="zout" aria-label="Zoom out">−</button>
+      </div>
       <div class="vctl">
         <button data-a="play" aria-label="Pause or play">${ICON.pause}</button>
         <button data-a="speed" aria-label="Change speed">1×</button>
-        <button data-a="reset" aria-label="Reset view">${ICON.reset}</button>
+        <button data-a="view" class="wide" aria-label="Change camera angle">3D</button>
+        <button data-a="full" aria-label="Full screen view">${ICON.expand}</button>
       </div>
-      <div class="vhint">Drag to rotate</div>
+      <div class="vhint">Swipe sideways to rotate</div>
     </div>
     <div class="target"><b>${item.sets} × ${esc(item.reps)}</b>${item.rest ? `<span>Rest ${item.rest} s</span>` : ''}<span>${esc(ex.equip)}</span></div>
     <section class="card" id="logger"></section>
@@ -102,6 +107,18 @@ export function exerciseView(root, [id], query) {
 
   let playing = true;
   let speed = 1;
+  let full = false;
+  let viewIdx = 0;
+  const VIEWS = [['default', '3D'], ['front', 'Front'], ['side', 'Side'], ['back', 'Back'], ['top', 'Top']];
+  const viewerEl = root.querySelector('.viewer');
+  const setFull = (v) => {
+    full = v;
+    viewerEl.classList.toggle('full', v);
+    document.body.classList.toggle('noscroll', v);
+    viewer.setFull(v);
+    viewerEl.querySelector('[data-a="full"]').innerHTML = v ? ICON.close : ICON.expand;
+    viewerEl.querySelector('.vhint').textContent = v ? 'Drag to rotate · pinch to zoom' : 'Swipe sideways to rotate';
+  };
   root.onclick = (e) => {
     const btn = e.target.closest('[data-a]');
     if (!btn) return;
@@ -115,7 +132,13 @@ export function exerciseView(root, [id], query) {
       speed = speed === 1 ? 0.5 : 1;
       viewer.setSpeed(speed);
       btn.textContent = speed === 1 ? '1×' : '½×';
-    } else if (a === 'reset') viewer.resetView();
+    } else if (a === 'view') {
+      viewIdx = (viewIdx + 1) % VIEWS.length;
+      viewer.setView(VIEWS[viewIdx][0]);
+      btn.textContent = VIEWS[viewIdx][1];
+    } else if (a === 'full') setFull(!full);
+    else if (a === 'zin') viewer.zoom(0.8);
+    else if (a === 'zout') viewer.zoom(1.25);
     else if (a === 'add') {
       setAt(rows());
       save();
@@ -148,6 +171,7 @@ export function exerciseView(root, [id], query) {
   };
 
   return () => {
+    document.body.classList.remove('noscroll');
     viewer.dispose();
     root.onclick = root.onchange = null;
   };
